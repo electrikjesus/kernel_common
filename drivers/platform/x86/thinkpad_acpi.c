@@ -163,6 +163,7 @@ enum tpacpi_hkey_event_t {
 	TP_HKEY_EV_HOTKEY_BASE		= 0x1001, /* first hotkey (FN+F1) */
 	TP_HKEY_EV_BRGHT_UP		= 0x1010, /* Brightness up */
 	TP_HKEY_EV_BRGHT_DOWN		= 0x1011, /* Brightness down */
+	TP_HKEY_EV_KBD_LIGHT		= 0x1012, /* Thinklight/kbd backlight */
 	TP_HKEY_EV_VOL_UP		= 0x1015, /* Volume up or unmute */
 	TP_HKEY_EV_VOL_DOWN		= 0x1016, /* Volume down or unmute */
 	TP_HKEY_EV_VOL_MUTE		= 0x1017, /* Mixer output mute */
@@ -1959,7 +1960,7 @@ enum {	/* Positions of some of the keys in hotkey masks */
 	TP_ACPI_HKEY_HIBERNATE_MASK	= 1 << TP_ACPI_HOTKEYSCAN_FNF12,
 	TP_ACPI_HKEY_BRGHTUP_MASK	= 1 << TP_ACPI_HOTKEYSCAN_FNHOME,
 	TP_ACPI_HKEY_BRGHTDWN_MASK	= 1 << TP_ACPI_HOTKEYSCAN_FNEND,
-	TP_ACPI_HKEY_THNKLGHT_MASK	= 1 << TP_ACPI_HOTKEYSCAN_FNPAGEUP,
+	TP_ACPI_HKEY_KBD_LIGHT_MASK	= 1 << TP_ACPI_HOTKEYSCAN_FNPAGEUP,
 	TP_ACPI_HKEY_ZOOM_MASK		= 1 << TP_ACPI_HOTKEYSCAN_FNSPACE,
 	TP_ACPI_HKEY_VOLUP_MASK		= 1 << TP_ACPI_HOTKEYSCAN_VOLUMEUP,
 	TP_ACPI_HKEY_VOLDWN_MASK	= 1 << TP_ACPI_HOTKEYSCAN_VOLUMEDOWN,
@@ -2344,7 +2345,7 @@ static void hotkey_read_nvram(struct tp_nvram_state *n, const u32 m)
 		n->display_toggle = !!(d & TP_NVRAM_MASK_HKT_DISPLAY);
 		n->hibernate_toggle = !!(d & TP_NVRAM_MASK_HKT_HIBERNATE);
 	}
-	if (m & TP_ACPI_HKEY_THNKLGHT_MASK) {
+	if (m & TP_ACPI_HKEY_KBD_LIGHT_MASK) {
 		d = nvram_read_byte(TP_NVRAM_ADDR_THINKLIGHT);
 		n->thinklight_toggle = !!(d & TP_NVRAM_MASK_THINKLIGHT);
 	}
@@ -5193,8 +5194,10 @@ static struct tpacpi_led_classdev tpacpi_led_kbdlight = {
 	.led_classdev = {
 		.name		= "tpacpi::kbd_backlight",
 		.max_brightness	= 2,
+		.flags		= LED_TRIGGER_READ_ONLY,
 		.brightness_set	= &kbdlight_sysfs_set,
 		.brightness_get	= &kbdlight_sysfs_get,
+		.default_trigger = "kbd-backlight",
 	}
 };
 
@@ -5222,6 +5225,8 @@ static int __init kbdlight_init(struct ibm_init_struct *iibm)
 		return rc;
 	}
 
+	tpacpi_hotkey_driver_mask_set(hotkey_driver_mask |
+				      TP_ACPI_HKEY_KBD_LIGHT_MASK);
 	return 0;
 }
 
@@ -5387,8 +5392,10 @@ static enum led_brightness light_sysfs_get(struct led_classdev *led_cdev)
 static struct tpacpi_led_classdev tpacpi_led_thinklight = {
 	.led_classdev = {
 		.name		= "tpacpi::thinklight",
+		.flags		= LED_TRIGGER_READ_ONLY,
 		.brightness_set	= &light_sysfs_set,
 		.brightness_get	= &light_sysfs_get,
+		.default_trigger = "kbd-backlight",
 	}
 };
 
@@ -5427,11 +5434,12 @@ static int __init light_init(struct ibm_init_struct *iibm)
 	if (rc < 0) {
 		tp_features.light = 0;
 		tp_features.light_status = 0;
-	} else  {
-		rc = 0;
+		return rc;
 	}
 
-	return rc;
+	tpacpi_hotkey_driver_mask_set(hotkey_driver_mask |
+				      TP_ACPI_HKEY_KBD_LIGHT_MASK);
+	return 0;
 }
 
 static void light_exit(void)
@@ -9168,6 +9176,10 @@ static void tpacpi_driver_event(const unsigned int hkey_event)
 		case TP_HKEY_EV_VOL_MUTE:
 			volume_alsa_notify_change();
 		}
+	}
+	if (hkey_event == TP_HKEY_EV_KBD_LIGHT) {
+		/* set_brightness = false, already handled by firmware */
+		ledtrig_kbd_backlight(false, 0);
 	}
 }
 
