@@ -13,6 +13,7 @@
 #define __LINUX_LEDS_H_INCLUDED
 
 #include <linux/device.h>
+#include <linux/kernfs.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/rwsem.h>
@@ -108,6 +109,8 @@ struct led_classdev {
 	void			*trigger_data;
 	/* true if activated - deactivate routine uses it to do cleanup */
 	bool			activated;
+	/* For triggers with current_brightness sysfs attribute */
+	struct kernfs_node	*current_brightness_kn;
 #endif
 
 	/* Ensures consistent access to the LED Flash Class device */
