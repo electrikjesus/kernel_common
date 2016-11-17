@@ -353,6 +353,14 @@ static inline void ledtrig_flash_ctrl(bool on) {}
 static inline void ledtrig_torch_ctrl(bool on) {}
 #endif
 
+#ifdef CONFIG_LEDS_TRIGGER_KBD_BACKLIGHT
+extern void ledtrig_kbd_backlight(bool set_brightness,
+				  enum led_brightness brightness);
+#else
+static inline void ledtrig_kbd_backlight(bool set_brightness,
+					 enum led_brightness brightness) {}
+#endif
+
 /*
  * Generic LED platform data for describing LED names and default triggers.
  */

@@ -67,6 +67,16 @@ config LEDS_TRIGGER_BACKLIGHT
 
 	  If unsure, say N.
 
+config LEDS_TRIGGER_KBD_BACKLIGHT
+	bool "LED keyboard backlight Trigger"
+	depends on LEDS_TRIGGERS
+	help
+	  This trigger can control keyboard backlight LED devices,
+	  it also allows user-space to monitor keyboard backlight brightness
+	  changes done through e.g. hotkeys on some laptops.
+
+	  If unsure, say Y.
+
 config LEDS_TRIGGER_CPU
 	bool "LED CPU Trigger"
 	depends on LEDS_TRIGGERS
