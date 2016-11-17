@@ -37,6 +37,11 @@ ssize_t led_trigger_store(struct device *dev, struct device_attribute *attr,
 	struct led_trigger *trig;
 	int ret = count;
 
+	if (led_cdev->flags & LED_TRIGGER_READ_ONLY) {
+		dev_err(led_cdev->dev, "Error this led triggers is hardwired and cannot be changed\n");
+		return -EINVAL;
+	}
+
 	mutex_lock(&led_cdev->led_access);
 
 	if (led_sysfs_is_disabled(led_cdev)) {

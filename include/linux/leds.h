@@ -47,6 +47,7 @@ struct led_classdev {
 #define LED_DEV_CAP_FLASH	(1 << 18)
 #define LED_HW_PLUGGABLE	(1 << 19)
 #define LED_PANIC_INDICATOR	(1 << 20)
+#define LED_TRIGGER_READ_ONLY   (1 << 21)
 
 	/* set_brightness_work / blink_timer flags, atomic, private. */
 	unsigned long		work_flags;
