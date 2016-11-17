@@ -1937,9 +1937,11 @@ static int kbd_led_level_set(struct led_classdev *led_cdev,
 
 static struct led_classdev kbd_led = {
 	.name           = "dell::kbd_backlight",
+	.flags		= LED_TRIGGER_READ_ONLY,
 	.brightness_set_blocking = kbd_led_level_set,
 	.brightness_get = kbd_led_level_get,
 	.groups         = kbd_led_groups,
+	.default_trigger = "kbd-backlight",
 };
 
 static int __init kbd_led_init(struct device *dev)
