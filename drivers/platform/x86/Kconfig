@@ -1026,6 +1026,13 @@ config INTEL_BXTWC_PMIC_TMU
 	  This driver enables the alarm wakeup functionality in the TMU unit
 	  of Whiskey Cove PMIC.
 
+config SURFACE3_POWER
+	tristate "Surface 3 power management driver"
+	depends on I2C && GPIOLIB && ACPI
+	---help---
+	  This driver provides support for the power supply features of
+	  the Surface 3 tablet.
+
 config SURFACE_PRO3_BUTTON
 	tristate "Power/home/volume buttons driver for Microsoft Surface Pro 3/4 tablet"
 	depends on ACPI && INPUT
