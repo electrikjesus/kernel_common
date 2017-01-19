@@ -72,6 +72,10 @@ static int xhci_pci_reinit(struct xhci_hcd *xhci, struct pci_dev *pdev)
 	 * new extended capabilities.
 	 */
 
+	/* Init Intel vendor defined extended capability */
+	if (pdev->vendor == PCI_VENDOR_ID_INTEL)
+		xhci_intel_cap_init(xhci);
+
 	/* PCI Memory-Write-Invalidate cycle support is optional (uncommon) */
 	if (!pci_set_mwi(pdev))
 		xhci_dbg(xhci, "MWI active\n");
@@ -177,6 +181,9 @@ static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
 	    (pdev->device == PCI_DEVICE_ID_INTEL_CHERRYVIEW_XHCI ||
 	     pdev->device == PCI_DEVICE_ID_INTEL_APL_XHCI))
 		xhci->quirks |= XHCI_MISSING_CAS;
+	if (pdev->vendor == PCI_VENDOR_ID_INTEL &&
+		 pdev->device == PCI_DEVICE_ID_INTEL_CHERRYVIEW_XHCI)
+		xhci->quirks |= XHCI_BROKEN_STREAMS;
 
 	if (pdev->vendor == PCI_VENDOR_ID_ETRON &&
 			pdev->device == PCI_DEVICE_ID_EJ168) {

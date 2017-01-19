@@ -102,6 +102,8 @@ soc_button_device_create(struct platform_device *pdev,
 		gpio_keys[n_buttons].active_low = 1;
 		gpio_keys[n_buttons].desc = info->name;
 		gpio_keys[n_buttons].wakeup = info->wakeup;
+		/* These devices often use cheap buttons, use 50 ms debounce */
+		gpio_keys[n_buttons].debounce_interval = 50;
 		n_buttons++;
 	}
 
@@ -113,6 +115,11 @@ soc_button_device_create(struct platform_device *pdev,
 	gpio_keys_pdata->buttons = gpio_keys;
 	gpio_keys_pdata->nbuttons = n_buttons;
 	gpio_keys_pdata->rep = autorepeat;
+
+	if (autorepeat)
+		gpio_keys_pdata->name = "SoC Button Array (autorepeat buttons)";
+	else
+		gpio_keys_pdata->name = "SoC Button Array";
 
 	pd = platform_device_alloc("gpio-keys", PLATFORM_DEVID_AUTO);
 	if (!pd) {

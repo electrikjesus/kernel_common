@@ -31,10 +31,13 @@
 #include <linux/of_irq.h>
 #include <linux/spinlock.h>
 
+#define WAKE_DEBOUNCE msecs_to_jiffies(1000)
+
 struct gpio_button_data {
 	const struct gpio_keys_button *button;
 	struct input_dev *input;
 	struct gpio_desc *gpiod;
+	unsigned short *code;
 
 	struct timer_list release_timer;
 	unsigned int release_delay;	/* in msecs, for IRQ-only buttons */
@@ -42,16 +45,21 @@ struct gpio_button_data {
 	struct delayed_work work;
 	unsigned int software_debounce;	/* in msecs, for GPIO-driven buttons */
 
+	unsigned long resume_time;	/* in jiffies, for wakeup buttons */
+
 	unsigned int irq;
 	spinlock_t lock;
 	bool disabled;
 	bool key_pressed;
+	bool suspended;
+	bool resume_time_valid;
 };
 
 struct gpio_keys_drvdata {
 	const struct gpio_keys_platform_data *pdata;
 	struct input_dev *input;
 	struct mutex disable_lock;
+	unsigned short *keymap;
 	struct gpio_button_data data[0];
 };
 
@@ -203,7 +211,7 @@ static ssize_t gpio_keys_attr_show_helper(struct gpio_keys_drvdata *ddata,
 		if (only_disabled && !bdata->disabled)
 			continue;
 
-		__set_bit(bdata->button->code, bits);
+		__set_bit(*bdata->code, bits);
 	}
 
 	ret = scnprintf(buf, PAGE_SIZE - 1, "%*pbl", n_events, bits);
@@ -254,7 +262,7 @@ static ssize_t gpio_keys_attr_store_helper(struct gpio_keys_drvdata *ddata,
 		if (bdata->button->type != type)
 			continue;
 
-		if (test_bit(bdata->button->code, bits) &&
+		if (test_bit(*bdata->code, bits) &&
 		    !bdata->button->can_disable) {
 			error = -EINVAL;
 			goto out;
@@ -269,7 +277,7 @@ static ssize_t gpio_keys_attr_store_helper(struct gpio_keys_drvdata *ddata,
 		if (bdata->button->type != type)
 			continue;
 
-		if (test_bit(bdata->button->code, bits))
+		if (test_bit(*bdata->code, bits))
 			gpio_keys_disable_button(bdata);
 		else
 			gpio_keys_enable_button(bdata);
@@ -353,6 +361,27 @@ static struct attribute_group gpio_keys_attr_group = {
 	.attrs = gpio_keys_attrs,
 };
 
+static bool gpio_keys_ignore_wakeup_button_press(struct gpio_button_data *bdata)
+{
+	unsigned long flags;
+	bool ret = false;
+
+	if (!bdata->button->wakeup)
+		return ret;
+
+	spin_lock_irqsave(&bdata->lock, flags);
+
+	if (bdata->suspended)
+		ret = true; /* Our resume method did not run yet */
+	else if (bdata->resume_time_valid &&
+		 time_before(jiffies, bdata->resume_time + WAKE_DEBOUNCE))
+		ret = true; /* Assume this is a wakeup press and ignore */
+
+	spin_unlock_irqrestore(&bdata->lock, flags);
+
+	return ret;
+}
+
 static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 {
 	const struct gpio_keys_button *button = bdata->button;
@@ -367,11 +396,18 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 		return;
 	}
 
+	state = (state ? 1 : 0) ^ button->active_low;
+
+	if (state && gpio_keys_ignore_wakeup_button_press(bdata))
+		return;
+
 	if (type == EV_ABS) {
 		if (state)
 			input_event(input, type, button->code, button->value);
 	} else {
-		input_event(input, type, button->code, state);
+
+		input_event(input, type, *bdata->code, !!state);
+
 	}
 	input_sync(input);
 }
@@ -411,7 +447,7 @@ static void gpio_keys_irq_timer(unsigned long _data)
 
 	spin_lock_irqsave(&bdata->lock, flags);
 	if (bdata->key_pressed) {
-		input_event(input, EV_KEY, bdata->button->code, 0);
+		input_event(input, EV_KEY, *bdata->code, 0);
 		input_sync(input);
 		bdata->key_pressed = false;
 	}
@@ -421,11 +457,13 @@ static void gpio_keys_irq_timer(unsigned long _data)
 static irqreturn_t gpio_keys_irq_isr(int irq, void *dev_id)
 {
 	struct gpio_button_data *bdata = dev_id;
-	const struct gpio_keys_button *button = bdata->button;
 	struct input_dev *input = bdata->input;
 	unsigned long flags;
 
 	BUG_ON(irq != bdata->irq);
+
+	if (gpio_keys_ignore_wakeup_button_press(bdata))
+		return IRQ_HANDLED;
 
 	spin_lock_irqsave(&bdata->lock, flags);
 
@@ -433,11 +471,11 @@ static irqreturn_t gpio_keys_irq_isr(int irq, void *dev_id)
 		if (bdata->button->wakeup)
 			pm_wakeup_event(bdata->input->dev.parent, 0);
 
-		input_event(input, EV_KEY, button->code, 1);
+		input_event(input, EV_KEY, *bdata->code, 1);
 		input_sync(input);
 
 		if (!bdata->release_delay) {
-			input_event(input, EV_KEY, button->code, 0);
+			input_event(input, EV_KEY, *bdata->code, 0);
 			input_sync(input);
 			goto out;
 		}
@@ -577,7 +615,8 @@ static int gpio_keys_setup_key(struct platform_device *pdev,
 		irqflags = 0;
 	}
 
-	input_set_capability(input, button->type ?: EV_KEY, button->code);
+	*bdata->code = button->code;
+	input_set_capability(input, button->type ?: EV_KEY, *bdata->code);
 
 	/*
 	 * Install custom action to cancel release timer and
@@ -750,6 +789,12 @@ static int gpio_keys_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
+	ddata->keymap = devm_kzalloc(dev,
+				     pdata->nbuttons * sizeof(unsigned short),
+				     GFP_KERNEL);
+	if (!ddata->keymap)
+		return -ENOMEM;
+
 	input = devm_input_allocate_device(dev);
 	if (!input) {
 		dev_err(dev, "failed to allocate input device\n");
@@ -773,6 +818,10 @@ static int gpio_keys_probe(struct platform_device *pdev)
 	input->id.vendor = 0x0001;
 	input->id.product = 0x0001;
 	input->id.version = 0x0100;
+
+	input->keycode = ddata->keymap;
+	input->keycodesize = sizeof(unsigned short);
+	input->keycodemax = pdata->nbuttons;
 
 	/* Enable auto repeat feature of Linux input subsystem */
 	if (pdata->rep)
@@ -840,13 +889,18 @@ static int __maybe_unused gpio_keys_suspend(struct device *dev)
 {
 	struct gpio_keys_drvdata *ddata = dev_get_drvdata(dev);
 	struct input_dev *input = ddata->input;
+	unsigned long flags;
 	int i;
 
 	if (device_may_wakeup(dev)) {
 		for (i = 0; i < ddata->pdata->nbuttons; i++) {
 			struct gpio_button_data *bdata = &ddata->data[i];
-			if (bdata->button->wakeup)
+			if (bdata->button->wakeup) {
+				spin_lock_irqsave(&bdata->lock, flags);
+				bdata->suspended = true;
+				spin_unlock_irqrestore(&bdata->lock, flags);
 				enable_irq_wake(bdata->irq);
+			}
 		}
 	} else {
 		mutex_lock(&input->mutex);
@@ -862,14 +916,21 @@ static int __maybe_unused gpio_keys_resume(struct device *dev)
 {
 	struct gpio_keys_drvdata *ddata = dev_get_drvdata(dev);
 	struct input_dev *input = ddata->input;
+	unsigned long flags;
 	int error = 0;
 	int i;
 
 	if (device_may_wakeup(dev)) {
 		for (i = 0; i < ddata->pdata->nbuttons; i++) {
 			struct gpio_button_data *bdata = &ddata->data[i];
-			if (bdata->button->wakeup)
+			if (bdata->button->wakeup) {
 				disable_irq_wake(bdata->irq);
+				spin_lock_irqsave(&bdata->lock, flags);
+				bdata->resume_time = jiffies;
+				bdata->resume_time_valid = true;
+				bdata->suspended = false;
+				spin_unlock_irqrestore(&bdata->lock, flags);
+			}
 		}
 	} else {
 		mutex_lock(&input->mutex);
