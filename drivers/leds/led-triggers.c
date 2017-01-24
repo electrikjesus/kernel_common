@@ -37,6 +37,11 @@ ssize_t led_trigger_store(struct device *dev, struct device_attribute *attr,
 	struct led_trigger *trig;
 	int ret = count;
 
+	if (led_cdev->flags & LED_TRIGGER_READ_ONLY) {
+		dev_err(led_cdev->dev, "Error this led triggers is hardwired and cannot be changed\n");
+		return -EINVAL;
+	}
+
 	mutex_lock(&led_cdev->led_access);
 
 	if (led_sysfs_is_disabled(led_cdev)) {
@@ -101,6 +106,87 @@ ssize_t led_trigger_show(struct device *dev, struct device_attribute *attr,
 	return len;
 }
 EXPORT_SYMBOL_GPL(led_trigger_show);
+
+static ssize_t current_brightness_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+
+	led_update_brightness(led_cdev);
+
+	return sprintf(buf, "%u\n", led_cdev->brightness);
+}
+
+static ssize_t current_brightness_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+	unsigned long state;
+	ssize_t ret;
+
+	mutex_lock(&led_cdev->led_access);
+
+	if (led_sysfs_is_disabled(led_cdev)) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+
+	ret = kstrtoul(buf, 10, &state);
+	if (ret)
+		goto unlock;
+
+	/* _nosleep version so as to not stop sw blinking */
+	led_set_brightness_nosleep(led_cdev, state);
+
+	/* Let any listeners know the brighness changed */
+	if (led_cdev->current_brightness_kn)
+		sysfs_notify_dirent(led_cdev->current_brightness_kn);
+
+	ret = size;
+unlock:
+	mutex_unlock(&led_cdev->led_access);
+	return ret;
+}
+
+static DEVICE_ATTR_RW(current_brightness);
+
+void led_trigger_add_current_brightness(struct led_classdev *led_cdev)
+{
+	int ret;
+
+	ret = device_create_file(led_cdev->dev, &dev_attr_current_brightness);
+	if (ret) {
+		dev_err(led_cdev->dev, "Error creating current_brightness\n");
+		return;
+	}
+
+	led_cdev->current_brightness_kn =
+		sysfs_get_dirent(led_cdev->dev->kobj.sd, "current_brightness");
+	if (!led_cdev->current_brightness_kn)
+		dev_err(led_cdev->dev, "Error getting current_brightness kn\n");
+}
+EXPORT_SYMBOL_GPL(led_trigger_add_current_brightness);
+
+void led_trigger_remove_current_brightness(struct led_classdev *led_cdev)
+{
+	sysfs_put(led_cdev->current_brightness_kn);
+	led_cdev->current_brightness_kn = NULL;
+	device_remove_file(led_cdev->dev, &dev_attr_current_brightness);
+}
+EXPORT_SYMBOL_GPL(led_trigger_remove_current_brightness);
+
+void led_trigger_notify_current_brightness_change(struct led_trigger *trig)
+{
+	struct led_classdev *led_cdev;
+
+	read_lock(&trig->leddev_list_lock);
+	list_for_each_entry(led_cdev, &trig->led_cdevs, trig_list) {
+		if (led_cdev->current_brightness_kn)
+			sysfs_notify_dirent(led_cdev->current_brightness_kn);
+	}
+	read_unlock(&trig->leddev_list_lock);
+}
+EXPORT_SYMBOL_GPL(led_trigger_notify_current_brightness_change);
 
 /* Caller must ensure led_cdev->trigger_lock held */
 void led_trigger_set(struct led_classdev *led_cdev, struct led_trigger *trig)

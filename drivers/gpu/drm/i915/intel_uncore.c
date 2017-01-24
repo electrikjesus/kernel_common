@@ -25,6 +25,7 @@
 #include "intel_drv.h"
 #include "i915_vgpu.h"
 
+#include <asm/iosf_mbi.h>
 #include <linux/pm_runtime.h>
 
 #define FORCEWAKE_ACK_TIMEOUT_MS 50
@@ -250,7 +251,7 @@ intel_uncore_fw_release_timer(struct hrtimer *timer)
 	return HRTIMER_NORESTART;
 }
 
-void intel_uncore_forcewake_reset(struct drm_i915_private *dev_priv,
+static void __intel_uncore_forcewake_reset(struct drm_i915_private *dev_priv,
 				  bool restore)
 {
 	unsigned long irqflags;
@@ -421,17 +422,24 @@ static void __intel_uncore_early_sanitize(struct drm_i915_private *dev_priv,
 				   GT_FIFO_CTL_RC6_POLICY_STALL);
 	}
 
-	/* Enable Decoupled MMIO only on BXT C stepping onwards */
-	if (!IS_BXT_REVID(dev_priv, BXT_REVID_C0, REVID_FOREVER))
+	if (IS_BXT_REVID(dev_priv, 0, BXT_REVID_B_LAST))
 		info->has_decoupled_mmio = false;
 
-	intel_uncore_forcewake_reset(dev_priv, restore_forcewake);
+	__intel_uncore_forcewake_reset(dev_priv, restore_forcewake);
 }
 
-void intel_uncore_early_sanitize(struct drm_i915_private *dev_priv,
-				 bool restore_forcewake)
+void intel_uncore_suspend(struct drm_i915_private *dev_priv)
 {
-	__intel_uncore_early_sanitize(dev_priv, restore_forcewake);
+	iosf_mbi_unregister_pmic_bus_access_notifier(
+		&dev_priv->uncore.pmic_bus_access_nb);
+	__intel_uncore_forcewake_reset(dev_priv, false);
+}
+
+void intel_uncore_resume(struct drm_i915_private *dev_priv)
+{
+	__intel_uncore_early_sanitize(dev_priv, true);
+	iosf_mbi_register_pmic_bus_access_notifier(
+		&dev_priv->uncore.pmic_bus_access_nb);
 	i915_check_and_clear_faults(dev_priv);
 }
 
@@ -626,7 +634,14 @@ find_fw_domain(struct drm_i915_private *dev_priv, u32 offset)
 			dev_priv->uncore.fw_domains_table_entries,
 			fw_range_cmp);
 
-	return entry ? entry->domains : 0;
+	if (!entry)
+		return 0;
+
+	WARN(entry->domains & ~dev_priv->uncore.fw_domains,
+	     "Uninitialized forcewake domain(s) 0x%x accessed at 0x%x\n",
+	     entry->domains & ~dev_priv->uncore.fw_domains, offset);
+
+	return entry->domains;
 }
 
 static void
@@ -1380,6 +1395,28 @@ static void intel_uncore_fw_domains_init(struct drm_i915_private *dev_priv)
 	dev_priv->uncore.fw_domains_table_entries = ARRAY_SIZE((d)); \
 }
 
+static int i915_pmic_bus_access_notifier(struct notifier_block *nb,
+					 unsigned long action, void *data)
+{
+	struct drm_i915_private *dev_priv = container_of(nb,
+			struct drm_i915_private, uncore.pmic_bus_access_nb);
+
+	switch (action) {
+	case MBI_PMIC_BUS_ACCESS_BEGIN:
+		/*
+		 * forcewake all to make sure that we don't need to forcewake
+		 * any power-planes while the pmic bus is busy.
+		 */
+		intel_uncore_forcewake_get(dev_priv, FORCEWAKE_ALL);
+		break;
+	case MBI_PMIC_BUS_ACCESS_END:
+		intel_uncore_forcewake_put(dev_priv, FORCEWAKE_ALL);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
 void intel_uncore_init(struct drm_i915_private *dev_priv)
 {
 	i915_check_vgpu(dev_priv);
@@ -1389,6 +1426,8 @@ void intel_uncore_init(struct drm_i915_private *dev_priv)
 	__intel_uncore_early_sanitize(dev_priv, false);
 
 	dev_priv->uncore.unclaimed_mmio_check = 1;
+	dev_priv->uncore.pmic_bus_access_nb.notifier_call =
+		i915_pmic_bus_access_notifier;
 
 	switch (INTEL_INFO(dev_priv)->gen) {
 	default:
@@ -1448,6 +1487,9 @@ void intel_uncore_init(struct drm_i915_private *dev_priv)
 		ASSIGN_READ_MMIO_VFUNCS(vgpu);
 	}
 
+	iosf_mbi_register_pmic_bus_access_notifier(
+		&dev_priv->uncore.pmic_bus_access_nb);
+
 	i915_check_and_clear_faults(dev_priv);
 }
 #undef ASSIGN_WRITE_MMIO_VFUNCS
@@ -1455,9 +1497,12 @@ void intel_uncore_init(struct drm_i915_private *dev_priv)
 
 void intel_uncore_fini(struct drm_i915_private *dev_priv)
 {
+	iosf_mbi_unregister_pmic_bus_access_notifier(
+		&dev_priv->uncore.pmic_bus_access_nb);
+
 	/* Paranoia: make sure we have disabled everything before we exit. */
 	intel_uncore_sanitize(dev_priv);
-	intel_uncore_forcewake_reset(dev_priv, false);
+	__intel_uncore_forcewake_reset(dev_priv, false);
 }
 
 #define GEN_RANGE(l, h) GENMASK((h) - 1, (l) - 1)
@@ -1673,7 +1718,7 @@ static int gen6_reset_engines(struct drm_i915_private *dev_priv,
 
 	ret = gen6_hw_domain_reset(dev_priv, hw_mask);
 
-	intel_uncore_forcewake_reset(dev_priv, true);
+	__intel_uncore_forcewake_reset(dev_priv, true);
 
 	return ret;
 }
@@ -1813,7 +1858,7 @@ static reset_func intel_get_gpu_reset(struct drm_i915_private *dev_priv)
 		return ironlake_do_reset;
 	else if (IS_G4X(dev_priv))
 		return g4x_do_reset;
-	else if (IS_G33(dev_priv))
+	else if (IS_G33(dev_priv) || IS_PINEVIEW(dev_priv))
 		return g33_do_reset;
 	else if (INTEL_INFO(dev_priv)->gen >= 3)
 		return i915_do_reset;

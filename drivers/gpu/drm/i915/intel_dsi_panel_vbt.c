@@ -29,6 +29,7 @@
 #include <drm/drm_edid.h>
 #include <drm/i915_drm.h>
 #include <drm/drm_panel.h>
+#include <linux/gpio/consumer.h>
 #include <linux/slab.h>
 #include <video/mipi_display.h>
 #include <asm/intel-mid.h>
@@ -191,6 +192,8 @@ static const u8 *mipi_exec_send_packet(struct intel_dsi *intel_dsi,
 		break;
 	}
 
+	wait_for_dsi_fifo_empty(intel_dsi, port);
+
 out:
 	data += len;
 
@@ -305,19 +308,44 @@ static void chv_exec_gpio(struct drm_i915_private *dev_priv,
 	mutex_unlock(&dev_priv->sb_lock);
 }
 
+static void bxt_exec_gpio(struct drm_i915_private *dev_priv,
+			  u8 gpio_source, u8 gpio_index, bool value)
+{
+	/* XXX: this table is a quick ugly hack. */
+	static struct gpio_desc *bxt_gpio_table[U8_MAX + 1];
+	struct gpio_desc *gpio_desc = bxt_gpio_table[gpio_index];
+
+	if (!gpio_desc) {
+		gpio_desc = devm_gpiod_get_index(dev_priv->drm.dev,
+						 "panel", gpio_index,
+						 value ? GPIOD_OUT_LOW :
+						 GPIOD_OUT_HIGH);
+
+		if (IS_ERR_OR_NULL(gpio_desc)) {
+			DRM_ERROR("GPIO index %u request failed (%ld)\n",
+				  gpio_index, PTR_ERR(gpio_desc));
+			return;
+		}
+
+		bxt_gpio_table[gpio_index] = gpio_desc;
+	}
+
+	gpiod_set_value(gpio_desc, value);
+}
+
 static const u8 *mipi_exec_gpio(struct intel_dsi *intel_dsi, const u8 *data)
 {
 	struct drm_device *dev = intel_dsi->base.base.dev;
 	struct drm_i915_private *dev_priv = to_i915(dev);
-	u8 gpio_source, gpio_index;
+	u8 gpio_source, gpio_index = 0, gpio_number;
 	bool value;
 
 	DRM_DEBUG_KMS("\n");
 
 	if (dev_priv->vbt.dsi.seq_version >= 3)
-		data++;
+		gpio_index = *data++;
 
-	gpio_index = *data++;
+	gpio_number = *data++;
 
 	/* gpio source in sequence v2 only */
 	if (dev_priv->vbt.dsi.seq_version == 2)
@@ -329,11 +357,11 @@ static const u8 *mipi_exec_gpio(struct intel_dsi *intel_dsi, const u8 *data)
 	value = *data++ & 1;
 
 	if (IS_VALLEYVIEW(dev_priv))
-		vlv_exec_gpio(dev_priv, gpio_source, gpio_index, value);
+		vlv_exec_gpio(dev_priv, gpio_source, gpio_number, value);
 	else if (IS_CHERRYVIEW(dev_priv))
-		chv_exec_gpio(dev_priv, gpio_source, gpio_index, value);
+		chv_exec_gpio(dev_priv, gpio_source, gpio_number, value);
 	else
-		DRM_DEBUG_KMS("GPIO element not supported on this platform\n");
+		bxt_exec_gpio(dev_priv, gpio_source, gpio_index, value);
 
 	return data;
 }
@@ -398,10 +426,9 @@ static const char *sequence_name(enum mipi_seq seq_id)
 		return "(unknown)";
 }
 
-static void generic_exec_sequence(struct drm_panel *panel, enum mipi_seq seq_id)
+void intel_dsi_exec_vbt_sequence(struct intel_dsi *intel_dsi,
+				 enum mipi_seq seq_id)
 {
-	struct vbt_panel *vbt_panel = to_vbt_panel(panel);
-	struct intel_dsi *intel_dsi = vbt_panel->intel_dsi;
 	struct drm_i915_private *dev_priv = to_i915(intel_dsi->base.base.dev);
 	const u8 *data;
 	fn_mipi_elem_exec mipi_elem_exec;
@@ -465,40 +492,6 @@ static void generic_exec_sequence(struct drm_panel *panel, enum mipi_seq seq_id)
 	}
 }
 
-static int vbt_panel_prepare(struct drm_panel *panel)
-{
-	generic_exec_sequence(panel, MIPI_SEQ_ASSERT_RESET);
-	generic_exec_sequence(panel, MIPI_SEQ_POWER_ON);
-	generic_exec_sequence(panel, MIPI_SEQ_DEASSERT_RESET);
-	generic_exec_sequence(panel, MIPI_SEQ_INIT_OTP);
-
-	return 0;
-}
-
-static int vbt_panel_unprepare(struct drm_panel *panel)
-{
-	generic_exec_sequence(panel, MIPI_SEQ_ASSERT_RESET);
-	generic_exec_sequence(panel, MIPI_SEQ_POWER_OFF);
-
-	return 0;
-}
-
-static int vbt_panel_enable(struct drm_panel *panel)
-{
-	generic_exec_sequence(panel, MIPI_SEQ_DISPLAY_ON);
-	generic_exec_sequence(panel, MIPI_SEQ_BACKLIGHT_ON);
-
-	return 0;
-}
-
-static int vbt_panel_disable(struct drm_panel *panel)
-{
-	generic_exec_sequence(panel, MIPI_SEQ_BACKLIGHT_OFF);
-	generic_exec_sequence(panel, MIPI_SEQ_DISPLAY_OFF);
-
-	return 0;
-}
-
 static int vbt_panel_get_modes(struct drm_panel *panel)
 {
 	struct vbt_panel *vbt_panel = to_vbt_panel(panel);
@@ -522,10 +515,6 @@ static int vbt_panel_get_modes(struct drm_panel *panel)
 }
 
 static const struct drm_panel_funcs vbt_panel_funcs = {
-	.disable = vbt_panel_disable,
-	.unprepare = vbt_panel_unprepare,
-	.prepare = vbt_panel_prepare,
-	.enable = vbt_panel_enable,
 	.get_modes = vbt_panel_get_modes,
 };
 

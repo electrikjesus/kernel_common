@@ -27,6 +27,9 @@ void led_set_brightness_nopm(struct led_classdev *led_cdev,
 				enum led_brightness value);
 void led_set_brightness_nosleep(struct led_classdev *led_cdev,
 				enum led_brightness value);
+void led_trigger_add_current_brightness(struct led_classdev *cdev);
+void led_trigger_remove_current_brightness(struct led_classdev *cdev);
+void led_trigger_notify_current_brightness_change(struct led_trigger *trig);
 
 extern struct rw_semaphore leds_list_lock;
 extern struct list_head leds_list;

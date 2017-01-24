@@ -33,7 +33,8 @@ Description:
 		You can change triggers in a similar manner to the way an IO
 		scheduler is chosen. Trigger specific parameters can appear in
 		/sys/class/leds/<led> once a given trigger is selected. For
-		their documentation see sysfs-class-led-trigger-*.
+		their documentation see sysfs-class-led-trigger-*. Also see
+		the trigger specific current_brightness file described below.
 
 What:		/sys/class/leds/<led>/inverted
 Date:		January 2011
@@ -44,3 +45,15 @@ Description:
 		gpio and backlight triggers. In case of the backlight trigger,
 		it is useful when driving a LED which is intended to indicate
 		a device in a standby like state.
+
+What:		/sys/class/leds/<led>/current_brightness
+Date:		November 2016
+KernelVersion:	4.10
+Description:
+		Triggers which support it may register a current_brightness
+		file. This file supports poll() to detect when the trigger
+		modifies the brightness of the LED.
+		Reading this file will always return the current brightness
+		of the LED.
+		Writing this file sets the current brightness of the LED,
+		without influencing the trigger.

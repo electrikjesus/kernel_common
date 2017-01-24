@@ -13,6 +13,7 @@
 #define __LINUX_LEDS_H_INCLUDED
 
 #include <linux/device.h>
+#include <linux/kernfs.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/rwsem.h>
@@ -46,6 +47,7 @@ struct led_classdev {
 #define LED_DEV_CAP_FLASH	(1 << 18)
 #define LED_HW_PLUGGABLE	(1 << 19)
 #define LED_PANIC_INDICATOR	(1 << 20)
+#define LED_TRIGGER_READ_ONLY   (1 << 21)
 
 	/* set_brightness_work / blink_timer flags, atomic, private. */
 	unsigned long		work_flags;
@@ -108,6 +110,8 @@ struct led_classdev {
 	void			*trigger_data;
 	/* true if activated - deactivate routine uses it to do cleanup */
 	bool			activated;
+	/* For triggers with current_brightness sysfs attribute */
+	struct kernfs_node	*current_brightness_kn;
 #endif
 
 	/* Ensures consistent access to the LED Flash Class device */
@@ -348,6 +352,14 @@ extern void ledtrig_torch_ctrl(bool on);
 #else
 static inline void ledtrig_flash_ctrl(bool on) {}
 static inline void ledtrig_torch_ctrl(bool on) {}
+#endif
+
+#ifdef CONFIG_LEDS_TRIGGER_KBD_BACKLIGHT
+extern void ledtrig_kbd_backlight(bool set_brightness,
+				  enum led_brightness brightness);
+#else
+static inline void ledtrig_kbd_backlight(bool set_brightness,
+					 enum led_brightness brightness) {}
 #endif
 
 /*
