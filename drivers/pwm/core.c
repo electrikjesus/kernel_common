@@ -831,7 +831,7 @@ struct pwm_device *pwm_get(struct device *dev, const char *con_id)
 	 * deferred probe mechanism.
 	 */
 	if (!chip && chosen->module) {
-		err = request_module(chosen->module);
+		int err = request_module(chosen->module);
 		if (err == 0)
 			chip = pwmchip_find_by_name(chosen->provider);
 	}
