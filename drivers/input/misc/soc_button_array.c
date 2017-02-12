@@ -211,6 +211,7 @@ static struct soc_button_info soc_button_PNP0C40[] = {
 
 static const struct acpi_device_id soc_button_acpi_match[] = {
 	{ "PNP0C40", (unsigned long)soc_button_PNP0C40 },
+	{ "ACPI0011", (unsigned long)soc_button_PNP0C40 },
 	{ }
 };
 
